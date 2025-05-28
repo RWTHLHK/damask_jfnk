@@ -1,0 +1,80 @@
+solver: {mechanical: spectral_polarization}
+loadstep:
+- boundary_conditions:
+    mechanical:
+      F:
+      - [0.9964864238890252, 0.0, 0.0]
+      - [0.0, 0.9971984515753902, 0.0]
+      - [0.0, 0.0, 1.0068128978862443]
+      P:
+      - [x, x, x]
+      - [x, x, x]
+      - [x, x, x]
+  discretization: {t: 6.651354120782844, N: 6}
+  f_out: 1
+  f_restart: 1
+- boundary_conditions:
+    mechanical:
+      F:
+      - [0.9928667605529713, 0.0, 0.0]
+      - [0.0, 0.9942097079681986, 0.0]
+      - [0.0, 0.0, 1.0135295773326976]
+      P:
+      - [x, x, x]
+      - [x, x, x]
+      - [x, x, x]
+  discretization: {t: 6.65645807761981, N: 6}
+  f_out: 1
+  f_restart: 1
+- boundary_conditions:
+    mechanical:
+      F:
+      - [0.9858288787721595, 0.0, 0.0]
+      - [0.0, 0.9880649643975034, 0.0]
+      - [0.0, 0.0, 1.0271370473476962]
+      P:
+      - [x, x, x]
+      - [x, x, x]
+      - [x, x, x]
+  discretization: {t: 13.339242548894797, N: 6}
+  f_out: 1
+  f_restart: 1
+- boundary_conditions:
+    mechanical:
+      F:
+      - [0.971698186853152, 0.0, 0.0]
+      - [0.0, 0.9761109076702088, 0.0]
+      - [0.0, 0.0, 1.0548497062133524]
+      P:
+      - [x, x, x]
+      - [x, x, x]
+      - [x, x, x]
+  discretization: {t: 26.65065772833519, N: 6}
+  f_out: 1
+  f_restart: 1
+- boundary_conditions:
+    mechanical:
+      F:
+      - [0.9440359533228514, 0.0, 0.0]
+      - [0.0, 0.9526306675128782, 0.0]
+      - [0.0, 0.0, 1.112546316225953]
+      P:
+      - [x, x, x]
+      - [x, x, x]
+      - [x, x, x]
+  discretization: {t: 53.3096106374171, N: 6}
+  f_out: 1
+  f_restart: 1
+- boundary_conditions:
+    mechanical:
+      F:
+      - [0.8910419038349743, 0.0, 0.0]
+      - [0.0, 0.9073431699569802, 0.0]
+      - [0.0, 0.0, 1.2375972513766618]
+      P:
+      - [x, x, x]
+      - [x, x, x]
+      - [x, x, x]
+  discretization: {t: 106.6352849529035, N: 50}
+  f_out: 1
+  f_restart: 1
