@@ -1,0 +1,22 @@
+# HDF5 files
+*.hdf5
+*.h5
+
+# DAMASK state files
+*.sta
+
+# Python cache files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Log files
+logs/
+*.log
+
+# Work directory
+workdir/
+
+# IDE specific files
+.vscode/
+.idea/
