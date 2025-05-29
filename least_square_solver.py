@@ -90,7 +90,7 @@ def least_squares_solver(
         return res
     # Lower bound is always [1e-6, 1e-6, 1e-6] to allow for compression
     lower = [1e-6, 1e-6, 1e-6]
-    upper = [1.5, 1.5, 1.5]
+    upper = [2.0, 2.0, 2.0]
     bounds = (lower, upper)
     if 'verbose' not in least_squares_kwargs:
         least_squares_kwargs['verbose'] = 2

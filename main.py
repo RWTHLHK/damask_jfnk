@@ -38,6 +38,7 @@ def run_workflow(
     target_delta_eps: float = 1e-6,
     min_trial_increments: int = 2,
     max_trial_increments: int = 10,
+    min_time_step: float = 1e-4,
     tol: float = 1e-5,
     verbose: bool = True
 ):
@@ -47,7 +48,7 @@ def run_workflow(
     is_initial = True
     restart_increment = None
     total_increment = 0  # Track total number of production increments
-    N_prod = 4  # Number of increments per production run
+    N_prod = 10  # Number of increments per production run
     for i, mean_stress in enumerate(mean_stress_seq):
         if verbose:
             print(f"\n--- Step {i+1}/{len(mean_stress_seq)} ---")
@@ -71,7 +72,9 @@ def run_workflow(
         F_new = np.diag(F_diag_opt)
         # 3. 生产步
         delta_eps_eq = compute_equiv_strain_increment(F_prev, F_new)
-        t = delta_eps_eq / dot_eps_eq
+        t = max(delta_eps_eq / dot_eps_eq, min_time_step)  # Use max to ensure minimum time step
+        if verbose:
+            print(f"Time step: {t:.2e} (min: {min_time_step:.2e})")
         result_file = damask_sim.run_step(
             F=F_new,
             t=t,
@@ -92,11 +95,15 @@ def run_workflow(
             'target_stresses': target_stresses,
             'F_diag_opt': F_diag_opt,
             'final_stresses': final_stresses,
-            'abs_error': np.abs(final_stresses - target_stresses)
+            'abs_error': np.abs(final_stresses - target_stresses),
+            'time_step': t  # Add time step to results
         })
         # 更新F_prev和F_diag_init
         F_prev = F_new
-        F_diag_init = F_diag_opt
+        # Add small random perturbation to F_diag_init
+        F_diag_init = F_diag_opt + np.random.uniform(-1e-4, 1e-4, size=3)
+        if verbose:
+            print(f"Next step initial F_diag: {F_diag_init}")
         is_initial = False
         total_increment += N_prod
         restart_increment = total_increment
@@ -116,15 +123,15 @@ def main():
         material_file='/home/doelz-admin/projects/damask_jfnk/workdir/material.yaml',
         base_jobname='grid_load_material',
         F_init=np.eye(3),
-        run_increments=4
+        run_increments=10
     )
     sim = DAMASKSimulation(config)
 
     # Initial F
     F0 = np.array([
-        [1.01, 0, 0],
-        [0, 1.001, 0],
-        [0, 0, 1.0001]
+        [1.001, 0, 0],
+        [0, 0.9997, 0],
+        [0, 0, 0.9996]
     ])
 
     # 固定 triax/lode
@@ -132,7 +139,7 @@ def main():
     lode = 0.1
     # 生成 mean stress 序列
     mean_stress_seq = generate_mean_stress_sequence(
-        start=30, mid=150, stop=300, n_fast=12, n_slow=30
+        start=30, mid=50, stop=150, n_fast=8, n_slow=80
     )
 
     # Run workflow
@@ -146,6 +153,7 @@ def main():
         target_delta_eps=1e-6,
         min_trial_increments=2,
         max_trial_increments=10,
+        min_time_step=1e-4,
         tol=1e-5,
         verbose=True
     )
@@ -153,7 +161,7 @@ def main():
     # Print summary
     logger.info("\nSummary of all steps:")
     for r in results:
-        logger.info(f"Step {r['step']}: mean_stress={r['mean_stress']:.3f}, F_diag={r['F_diag_opt']}, final_stresses={r['final_stresses']}, abs_error={r['abs_error']}")
+        logger.info(f"Step {r['step']}: mean_stress={r['mean_stress']:.3f}, F_diag={r['F_diag_opt']}, final_stresses={r['final_stresses']}, abs_error={r['abs_error']}, time_step={r['time_step']:.2e}")
 
 if __name__ == "__main__":
     main()

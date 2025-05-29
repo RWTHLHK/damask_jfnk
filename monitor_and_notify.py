@@ -7,9 +7,6 @@ SCKEY = "SCT281072T4BhUWJ5NlLAbDaUNFCddg8sb"  # <-- 在此处填写你的SCKEY
 STA_FILE = "/home/doelz-admin/projects/damask_jfnk/workdir/grid_load_material.sta"
 CHECK_INTERVAL = 60  # seconds
 
-# 正则匹配 increment 行
-INCREMENT_PATTERN = re.compile(r"Increment\s+(\d+)")
-
 def send_wechat(msg):
     url = f"https://sctapi.ftqq.com/{SCKEY}.send"
     data = {"title": "DAMASK模拟进度更新", "desp": msg}
@@ -37,7 +34,6 @@ def get_last_increment(sta_file):
 if __name__ == "__main__":
     print(f"监控 {STA_FILE}，每{CHECK_INTERVAL}s检查一次 increment 是否有更新...")
     last_seen_increment = get_last_increment(STA_FILE)
-    print(last_seen_increment)
     if last_seen_increment is not None:
         print(f"初始 increment: {last_seen_increment}")
     else:
