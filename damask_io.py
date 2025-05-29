@@ -6,6 +6,7 @@ import logging
 from .config import DamaskSimConfig
 import numpy as np
 import shutil
+from typing import Optional
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 class JobNameManager:
@@ -50,10 +51,18 @@ class DAMASKSimulation:
     """
     Encapsulates all DAMASK simulation operations, including load step management,
     running DAMASK, postprocessing, and cleanup.
+
+    Attributes:
+        sim_cfg (DamaskSimConfig): Simulation configuration
+        load_case (damask.LoadcaseGrid): Current load case
+        load_case_path (str): Path to the current load case file
     """
-    def __init__(self, sim_cfg: DamaskSimConfig):
+    def __init__(self, sim_cfg: DamaskSimConfig) -> None:
         """
         Initialize the DAMASKSimulation with a simulation configuration.
+
+        Args:
+            sim_cfg: Simulation configuration
         """
         self.sim_cfg = sim_cfg
         self.load_case = None
@@ -62,27 +71,55 @@ class DAMASKSimulation:
         os.makedirs(sim_cfg.workdir, exist_ok=True)
         os.makedirs(sim_cfg.logsdir, exist_ok=True)
 
-    def _inversion(self, l, fill=0):
+    def _inversion(self, l: list, fill: int = 0) -> list:
         """
         Convert 'x' to fill value and vice versa in a nested list (for boundary conditions).
+
+        Args:
+            l: Input list
+            fill: Value to use for filling
+
+        Returns:
+            List with 'x' and fill values swapped
         """
         return [self._inversion(i, fill) if isinstance(i, list) else fill if i == 'x' else 'x' for i in l]
 
-    def _load_loadcase(self):
-        """Load the load.yaml file as a DAMASK LoadcaseGrid object."""
+    def _load_loadcase(self) -> None:
+        """
+        Load the load.yaml file as a DAMASK LoadcaseGrid object.
+
+        Raises:
+            RuntimeError: If loading fails
+        """
         self.load_case = damask.LoadcaseGrid.load(self.load_case_path)
         if self.load_case is None:
             raise RuntimeError(f"Failed to load {self.load_case_path}.")
 
-    def save_loadcase(self, path=None):
-        """Save the current load_case to a YAML file."""
+    def save_loadcase(self, path: Optional[str] = None) -> None:
+        """
+        Save the current load_case to a YAML file.
+
+        Args:
+            path: Path to save to. If None, uses current load_case_path
+        """
         if path is None:
             path = self.load_case_path
         self.load_case.save(path)
 
-    def modify_load_step(self, step_index: int, F: np.ndarray, t: float, N: int, f_out: int = 1, f_restart: int = 1):
+    def modify_load_step(self, step_index: int, F: np.ndarray, t: float, N: int, f_out: int = 1, f_restart: int = 1) -> None:
         """
         Modify a specific load step using the same interface and format as add_trial_load_step.
+
+        Args:
+            step_index: Index of the load step to modify
+            F: Deformation gradient (3x3 array)
+            t: Time step
+            N: Number of increments
+            f_out: Output frequency
+            f_restart: Restart frequency
+
+        Raises:
+            IndexError: If step_index is out of range
         """
         if step_index >= len(self.load_case['loadstep']):
             raise IndexError(f"Load step {step_index} does not exist")
@@ -99,9 +136,16 @@ class DAMASKSimulation:
         }
         self.load_case['loadstep'][step_index].update(new_step_dict)
 
-    def add_trial_load_step(self, F: np.ndarray, t: float, N: int, f_out: int = 1, f_restart: int = 1):
+    def add_trial_load_step(self, F: np.ndarray, t: float, N: int, f_out: int = 1, f_restart: int = 1) -> None:
         """
         Add a new load step with the specified F, t, N, and optional output/restart frequency.
+
+        Args:
+            F: Deformation gradient (3x3 array)
+            t: Time step
+            N: Number of increments
+            f_out: Output frequency
+            f_restart: Restart frequency
         """
         loadstep = {
             'boundary_conditions': {
@@ -116,18 +160,28 @@ class DAMASKSimulation:
         }
         self.load_case['loadstep'].append(loadstep)
 
-    def run_step(self, F: np.ndarray, t: float, N: int, is_initial: bool = False, is_trial: bool = False, f_out: int = 1, f_restart: int = 1, restart_increment: int = None, jobname: str = None) -> str:
+    def run_step(self, F: np.ndarray, t: float, N: int, is_initial: bool = False, is_trial: bool = False,
+                f_out: int = 1, f_restart: int = 1, restart_increment: Optional[int] = None,
+                jobname: Optional[str] = None) -> str:
         """
         Run a DAMASK simulation step.
-        - For trial runs (is_trial=True, is_initial=False):
-            * Copy the current load.yaml to load_trial.yaml
-            * Add the trial step to load_trial.yaml
-            * Run DAMASK with --load load_trial.yaml
-        - For production/initial runs: operate on the main load.yaml as before.
-        - Only add --restart for non-initial runs.
-        - If is_trial: cleanup result after run.
-        - jobname: unique jobname for this run (trial/production). If None, use sim_cfg.base_jobname.
-        Returns: result file path.
+
+        Args:
+            F: Deformation gradient (3x3 array)
+            t: Time step
+            N: Number of increments
+            is_initial: Whether this is the initial step
+            is_trial: Whether this is a trial run
+            f_out: Output frequency
+            f_restart: Restart frequency
+            restart_increment: Increment to restart from (required for non-initial runs)
+            jobname: Unique jobname for this run. If None, uses sim_cfg.base_jobname
+
+        Returns:
+            Path to the result file
+
+        Raises:
+            ValueError: If restart_increment is not provided for non-initial runs
         """
         if jobname is None:
             jobname = self.sim_cfg.base_jobname
@@ -178,7 +232,6 @@ class DAMASKSimulation:
         ]
         # Only add --restart for non-initial runs
         if not is_initial:
-            # print(f"Adding --restart {restart_increment}")
             if restart_increment is None:
                 raise ValueError("restart_increment must be provided for non-initial runs.")
             cmd += ['--restart', str(restart_increment)]
@@ -189,9 +242,12 @@ class DAMASKSimulation:
         result_file = os.path.join(self.sim_cfg.workdir, f'{jobname}.hdf5')
         return result_file
 
-    def cleanup(self, jobname: str):
+    def cleanup(self, jobname: str) -> None:
         """
         Remove result files for the given jobname from the workdir and the corresponding log file from logsdir.
+
+        Args:
+            jobname: Name of the job to clean up
         """
         for ext in [".hdf5", "_restart.hdf5", ".sta"]:
             fname = os.path.join(self.sim_cfg.workdir, f"{jobname}{ext}")
@@ -202,9 +258,9 @@ class DAMASKSimulation:
         if os.path.exists(log_file):
             os.remove(log_file)
 
-    def postprocess(self, is_initial: bool, is_trial: bool, jobname: str=None):
+    def postprocess_triax_lode(self, is_initial: bool, is_trial: bool, jobname: str=None):
         """
-        Postprocess the DAMASK result file for the given jobname and return relevant metrics.
+        Postprocess the DAMASK result file for the given jobname and return triaxiality and Lode angle.
         If is_trial is True, also cleanup the result and log files.
         """
         if jobname is not None:
@@ -212,7 +268,7 @@ class DAMASKSimulation:
         else:
             result_file = os.path.join(self.sim_cfg.workdir, f"{self.sim_cfg.base_jobname}.hdf5")
         result = damask.Result(result_file)
-        if is_trial:
+        if is_initial:
             result.add_stress_Cauchy(F='F')
         stress_eq = result.place('sigma')
         if stress_eq is None:
@@ -231,10 +287,8 @@ class DAMASKSimulation:
         dev = stress_mean_tensor - np.eye(3) * hydrostatic
         von_mises = np.sqrt(1.5 * np.sum(dev**2))
         triaxiality = hydrostatic / (von_mises + 1e-12)
-
-        # Compute lode angle with numerical stability checks
         J2 = 0.5 * np.sum(dev**2)
-        if J2 < 1e-12:  # If J2 is too small, lode angle is undefined
+        if J2 < 1e-12:
             lode_angle = 0.0
         else:
             try:
@@ -243,11 +297,37 @@ class DAMASKSimulation:
                 lode_arg = np.clip(lode_arg, -1, 1)
                 lode_angle = (1.0 / 3.0) * np.arcsin(lode_arg)
             except (RuntimeWarning, OverflowError):
-                # If overflow occurs, use a more stable calculation
-                # For very small deviatoric stress, lode angle is approximately 0
                 lode_angle = 0.0
-
         if is_trial:
             self.cleanup(jobname)
         return stress_mean, triaxiality, lode_angle
+
+    def postprocess(self, jobname: str) -> np.ndarray:
+        """
+        Postprocess the DAMASK result file for the given jobname and return the principal stresses.
+
+        Args:
+            jobname: Name of the job to postprocess
+
+        Returns:
+            Principal stresses [σ1, σ2, σ3] in descending order
+
+        Raises:
+            ValueError: If no 'sigma' field is found in the result file
+        """
+        result_file = os.path.join(self.sim_cfg.workdir, f"{jobname}.hdf5")
+        result = damask.Result(result_file)
+        result.add_stress_Cauchy(F='F')
+        stress_eq = result.place('sigma')
+        if stress_eq is None:
+            raise ValueError("No 'sigma' field found in the result file. Check if the simulation output is correct.")
+        # Get last increment
+        stress = list(stress_eq.values())[-1]  # shape: (n, 3, 3)
+        stress_mean_tensor = np.mean(stress, axis=0)  # shape: (3, 3)
+        principal_stresses = np.linalg.eigvalsh(stress_mean_tensor)
+        principal_stresses = np.sort(principal_stresses)[::-1] / 1e6  # descending order unit MPa
+        self.cleanup(jobname)
+        return principal_stresses
+
+
 

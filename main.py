@@ -1,108 +1,114 @@
 import numpy as np
-from damask_jfnk.config import DamaskSimConfig, JFNKConfig
-from damask_jfnk.damask_io import DAMASKSimulation
-from damask_jfnk.least_square_solver import least_squares_solver, compute_equiv_strain_increment
-import math
+from .config import DamaskSimConfig
+from .damask_io import DAMASKSimulation
+from .least_square_solver import least_squares_solver, compute_equiv_strain_increment
+import logging
+import os
+from typing import Tuple
+
+def target_principal_stresses(mean_stress, triax, lode_angle):
+    """
+    Compute target principal stresses from mean_stress, triaxiality, and lode_angle (in radians).
+    Returns: principal_stresses (shape [3,], descending order)
+    """
+    # triax = mean_stress / (von_mises + 1e-12)
+    von_mises = mean_stress / (triax + 1e-12)
+    J2 = (von_mises ** 2) / 1.5
+    sqrtJ2 = np.sqrt(J2)
+    s1 = mean_stress + (4 * sqrtJ2 / 3) * np.cos(lode_angle)
+    s2 = mean_stress + (4 * sqrtJ2 / 3) * np.cos(lode_angle - 2 * np.pi / 3)
+    s3 = mean_stress + (4 * sqrtJ2 / 3) * np.cos(lode_angle + 2 * np.pi / 3)
+    return np.sort([s1, s2, s3])[::-1]
+
+def generate_mean_stress_sequence(start, mid, stop, n_fast, n_slow):
+    """
+    Generate a sequence of mean stresses: first n_fast steps with larger increments, then n_slow steps with smaller increments.
+    """
+    fast = np.linspace(start, mid, n_fast, endpoint=False)
+    slow = np.linspace(mid, stop, n_slow)
+    return np.concatenate([fast, slow])
 
 def run_workflow(
     damask_sim: DAMASKSimulation,
-    jfnk_cfg: JFNKConfig,
     F_init: np.ndarray,
-    dot_eps_eq: float,
-    max_steps: int = 10,
-    target_delta_eps: float = 1e-6
+    triax: float,
+    lode: float,
+    mean_stress_seq: np.ndarray,
+    dot_eps_eq: float = 1e-3,
+    target_delta_eps: float = 1e-6,
+    min_trial_increments: int = 2,
+    max_trial_increments: int = 10,
+    tol: float = 1e-5,
+    verbose: bool = True
 ):
-    """
-    Main workflow for controlling stress state in DAMASK simulations.
-
-    Args:
-        damask_sim: DAMASKSimulation instance
-        jfnk_cfg: JFNKConfig instance with target triaxiality and lode angle
-        F_init: Initial deformation gradient (3x3), should be slightly larger than identity
-        dot_eps_eq: Target equivalent strain rate
-        max_steps: Maximum number of steps to run
-        target_delta_eps: Target equivalent strain increment per increment (for trial runs, default 1e-6)
-
-    Returns:
-        List of (F, triax, lode) tuples for each successful step
-    """
     results = []
-    F_prev = np.eye(3)  # Start with identity matrix
-    step = 0
-    num_increments = 0
-    # ratio = np.exp(target_delta_eps/np.sqrt(2))
-    ratio = 1.01
-    while step < max_steps:
-        print(f"\n--- Step {step + 1}/{max_steps} ---")
-
-        # 1. Initial run or trial run
-        is_initial = (step == 0)
-        restart_increment = None if is_initial else num_increments
-
-        # Generate unique jobnames
-        trial_jobname = f"trial_step{step + 1}"
-
-        # 2. Run least squares solver to find optimal F
-        F_diag_init = np.diag(F_init)
-        F_opt, result = least_squares_solver(
+    F_prev = np.eye(3)
+    F_diag_init = np.diag(F_init)
+    is_initial = True
+    restart_increment = None
+    total_increment = 0  # Track total number of production increments
+    N_prod = 4  # Number of increments per production run
+    for i, mean_stress in enumerate(mean_stress_seq):
+        if verbose:
+            print(f"\n--- Step {i+1}/{len(mean_stress_seq)} ---")
+            print(f"Target mean stress: {mean_stress:.3f}")
+        # 1. 计算目标主应力
+        target_stresses = target_principal_stresses(mean_stress, triax, lode)
+        # 2. 用LS solver求解F_diag
+        F_diag_opt, result = least_squares_solver(
             F_diag_init=F_diag_init,
             F_prev=F_prev,
             damask_sim=damask_sim,
-            jfnk_cfg=jfnk_cfg,
+            target_stresses=target_stresses,
             is_initial=is_initial,
             restart_increment=restart_increment,
-            target_triax=jfnk_cfg.target_triax,
-            target_lode=jfnk_cfg.target_lode,
             dot_eps_eq=dot_eps_eq,
             target_delta_eps=target_delta_eps,
-            xtol=1e-4,
-            ftol=1e-4,
-            gtol=1e-4
+            min_trial_increments=min_trial_increments,
+            max_trial_increments=max_trial_increments,
+            ftol=tol, xtol=tol, gtol=tol, verbose=2
         )
-
-        if not result.success:
-            print(f"Step {step + 1} failed to converge")
-            break
-
-        # 3. Production run with optimal F
-        F_new = np.diag(F_opt)
+        F_new = np.diag(F_diag_opt)
+        # 3. 生产步
         delta_eps_eq = compute_equiv_strain_increment(F_prev, F_new)
         t = delta_eps_eq / dot_eps_eq
-        N = damask_sim.sim_cfg.run_increments  # Use fixed increments for production run
-        print(f"Running production step with F:\n{F_new}, N={N}, t={t:.4f}")
-        damask_sim.run_step(
+        result_file = damask_sim.run_step(
             F=F_new,
             t=t,
-            N=N,
+            N=N_prod,
             is_initial=is_initial,
             is_trial=False,
             restart_increment=restart_increment
         )
-
-        # 4. Use optimized triax and lode from least_squares_solver result
-        # result.fun = [triax - target_triax, lode - target_lode] at optimum
-        triax = result.fun[0] + jfnk_cfg.target_triax
-        lode = result.fun[1] + jfnk_cfg.target_lode
-        print(f"Step {step + 1} results:")
-        print(f"Triaxiality: {triax:.4f} (target: {jfnk_cfg.target_triax:.4f})")
-        print(f"Lode angle: {lode:.4f} (target: {jfnk_cfg.target_lode:.4f})")
-
-        # Store results
-        results.append((F_new, triax, lode))
-
-        # Update F_prev for next step
+        final_stresses = target_stresses + result.fun
+        if verbose:
+            print(f"Step {i+1} results:")
+            print(f"Final principal stresses: {final_stresses}")
+            print(f"Target principal stresses: {target_stresses}")
+            print(f"Absolute error: {np.abs(final_stresses - target_stresses)}")
+        results.append({
+            'step': i+1,
+            'mean_stress': mean_stress,
+            'target_stresses': target_stresses,
+            'F_diag_opt': F_diag_opt,
+            'final_stresses': final_stresses,
+            'abs_error': np.abs(final_stresses - target_stresses)
+        })
+        # 更新F_prev和F_diag_init
         F_prev = F_new
-        F_init = F_new @ F_prev
-        step += 1
-
-        # Update number of increments for next restart
-        num_increments += N
-        print(f"num_increments: {num_increments}")
+        F_diag_init = F_diag_opt
+        is_initial = False
+        total_increment += N_prod
+        restart_increment = total_increment
     return results
 
-if __name__ == '__main__':
-    # 1. Prepare simulation config
-    sim_cfg = DamaskSimConfig(
+def main():
+    # Setup logging
+    logging.basicConfig(level=logging.INFO)
+    logger = logging.getLogger(__name__)
+
+    # Load configuration
+    config = DamaskSimConfig(
         workdir='/home/doelz-admin/projects/damask_jfnk/workdir',
         logsdir='/home/doelz-admin/projects/damask_jfnk/logs',
         load_yaml='/home/doelz-admin/projects/damask_jfnk/workdir/load.yaml',
@@ -110,44 +116,44 @@ if __name__ == '__main__':
         material_file='/home/doelz-admin/projects/damask_jfnk/workdir/material.yaml',
         base_jobname='grid_load_material',
         F_init=np.eye(3),
-        run_increments=6  # Fixed increments for production run
+        run_increments=4
     )
+    sim = DAMASKSimulation(config)
 
-    # 2. Prepare JFNK config (trial step increments are adaptive)
-    jfnk_cfg = JFNKConfig(
-        target_triax=0.33,
-        target_lode=0.5,
-        min_trial_increments=2,   # Minimum increments per trial step
-        max_trial_increments=50,  # Maximum increments per trial step
-        tol=1e-3,
-        max_iter=10
-    )
-
-    # 3. Create simulation instance
-    sim = DAMASKSimulation(sim_cfg)
-
-    # 4. Run workflow with F_init slightly larger than identity
-    F_init = np.array([
-        [1.0001, 0, 0],
+    # Initial F
+    F0 = np.array([
+        [1.01, 0, 0],
         [0, 1.001, 0],
-        [0, 0, 1.01]
+        [0, 0, 1.0001]
     ])
 
-    # User can set target_delta_eps here
-    target_delta_eps = 1e-3
-    results = run_workflow(
-        damask_sim=sim,
-        jfnk_cfg=jfnk_cfg,
-        F_init=F_init,
-        dot_eps_eq=1e-3,
-        max_steps=10,
-        target_delta_eps=target_delta_eps
+    # 固定 triax/lode
+    triax = 0.33
+    lode = 0.1
+    # 生成 mean stress 序列
+    mean_stress_seq = generate_mean_stress_sequence(
+        start=30, mid=150, stop=300, n_fast=12, n_slow=30
     )
 
-    # 5. Print final results
-    print("\nFinal results:")
-    for i, (F, triax, lode) in enumerate(results):
-        print(f"\nStep {i + 1}:")
-        print(f"F:\n{F}")
-        print(f"Triaxiality: {triax:.4f}")
-        print(f"Lode angle: {lode:.4f}")
+    # Run workflow
+    results = run_workflow(
+        damask_sim=sim,
+        F_init=F0,
+        triax=triax,
+        lode=lode,
+        mean_stress_seq=mean_stress_seq,
+        dot_eps_eq=1e-3,
+        target_delta_eps=1e-6,
+        min_trial_increments=2,
+        max_trial_increments=10,
+        tol=1e-5,
+        verbose=True
+    )
+
+    # Print summary
+    logger.info("\nSummary of all steps:")
+    for r in results:
+        logger.info(f"Step {r['step']}: mean_stress={r['mean_stress']:.3f}, F_diag={r['F_diag_opt']}, final_stresses={r['final_stresses']}, abs_error={r['abs_error']}")
+
+if __name__ == "__main__":
+    main()

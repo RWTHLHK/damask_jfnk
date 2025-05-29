@@ -66,6 +66,23 @@ def plot_triax_lode_vs_eqstrain(eq_strain, triaxiality, lode_angle):
     plt.tight_layout()
     plt.savefig('result.png')
 
+def compute_homogenized_principal_stresses(result_file='grid_load_material.hdf5'):
+    """
+    Compute the principal stresses (sorted) of the homogenized Cauchy stress tensor from the last increment.
+    Returns: principal_stresses (sorted, shape [3,])
+    """
+    result = damask.Result(result_file)
+    result.add_stress_Cauchy(F='F')
+    stress_eq = result.place('sigma')
+    if stress_eq is None:
+        raise ValueError("No 'sigma' field found in the result file. Check if the simulation output is correct.")
+    # Get last increment
+    stress = list(stress_eq.values())[-1]  # shape: (n, 3, 3)
+    stress_mean_tensor = np.mean(stress, axis=0)  # shape: (3, 3)
+    principal_stresses = np.linalg.eigvalsh(stress_mean_tensor)
+    principal_stresses = np.sort(principal_stresses)[::-1]  # descending order
+    return principal_stresses
+
 if __name__ == "__main__":
     result_file = '/home/doelz-admin/projects/damask_jfnk/workdir/grid_load_material.hdf5'
     eq_strain, triaxiality, lode_angle = compute_all_increments_triax_lode_eqstrain(result_file)

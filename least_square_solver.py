@@ -7,8 +7,8 @@ def compute_equiv_strain_increment(F_old, F_new):
     Compute the equivalent strain increment between two deformation gradients.
     Uses principal logarithmic strain difference and J2 norm.
     """
-    delta_F = np.dot(np.linalg.inv(F_old), F_new)
-    U, s, Vh = np.linalg.svd(delta_F)
+    F_inc = F_new @ np.linalg.inv(F_old)
+    U, s, Vh = np.linalg.svd(F_inc)
     logV = np.log(s)
     eqv_strain = np.sqrt(2/3 * np.sum(logV**2))
     return eqv_strain
@@ -18,24 +18,23 @@ def residual(
     F_diag,                      # Diagonal of new F
     F_prev,                      # Previous F (3x3)
     damask_sim,                  # DAMASKSimulation instance
-    jfnk_cfg,                    # JFNKConfig instance
+    target_stresses,             # Target principal stresses (descending order)
     is_initial,                  # bool, whether this is the first step
     restart_increment,           # int, for --restart (None if is_initial)
     jobname,                     # str, unique jobname for this trial
-    target_triax,                # float, target triaxiality
-    target_lode,                 # float, target lode angle
     dot_eps_eq,                  # float, target equivalent strain rate
-    target_delta_eps            # float, target equivalent strain increment per increment (for trial runs)
+    target_delta_eps,            # float, target equivalent strain increment per increment (for trial runs)
+    min_trial_increments=2,
+    max_trial_increments=100
 ):
     """
-    Compute the residual vector for JFNK: [triaxiality - target_triax, lode_angle - target_lode].
-    target_delta_eps: Target equivalent strain increment per increment (for trial runs)
+    Compute the residual vector for principal stresses: [sigma1-sigma1_target, sigma2-sigma2_target, sigma3-sigma3_target].
     """
     F_new = np.diag(F_diag)
     # 1. Compute equivalent strain increment
     delta_eps_eq = compute_equiv_strain_increment(F_prev, F_new)
     # 2. Compute loading time t for this step
-    N = max(jfnk_cfg.min_trial_increments, min(jfnk_cfg.max_trial_increments, int(np.ceil(delta_eps_eq / target_delta_eps))))
+    N = max(min_trial_increments, min(max_trial_increments, int(np.ceil(delta_eps_eq / target_delta_eps))))
     t = delta_eps_eq / dot_eps_eq
     # 3. Run DAMASK trial step
     damask_sim.run_step(
@@ -44,31 +43,29 @@ def residual(
         restart_increment=restart_increment,
         jobname=jobname
     )
-    # 4. Postprocess
-    _, triax, lode = damask_sim.postprocess(
-        is_initial=is_initial, is_trial=True, jobname=jobname
-    )
+    # 4. Postprocess: get principal stresses (descending order)
+    principal_stresses = damask_sim.postprocess(jobname)
     # 5. Return residual
-    return np.array([triax - target_triax, lode - target_lode])
+    return principal_stresses - target_stresses
 
 
 def least_squares_solver(
     F_diag_init,
     F_prev,
     damask_sim,
-    jfnk_cfg,
+    target_stresses,
     is_initial,
     restart_increment,
-    target_triax,
-    target_lode,
     dot_eps_eq,
     target_delta_eps=1e-6,
+    min_trial_increments=2,
+    max_trial_increments=100,
     **least_squares_kwargs
 ):
     """
-    Solve for F_diag that matches target triaxiality and lode angle using least squares.
+    Solve for F_diag that matches target principal stresses using least squares.
     The lower bound is always [1e-6, 1e-6, 1e-6] to allow for both tension and compression directions.
-    The upper bound is always [1.05, 1.05, 1.05].
+    The upper bound is always [1.5, 1.5, 1.5].
     target_delta_eps: Target equivalent strain increment per increment (for trial runs)
     verbose=2: Show optimization process (can be overridden by least_squares_kwargs)
     Returns: optimized F_diag, result object
@@ -81,16 +78,15 @@ def least_squares_solver(
             F_diag=F_diag,
             F_prev=F_prev,
             damask_sim=damask_sim,
-            jfnk_cfg=jfnk_cfg,
+            target_stresses=target_stresses,
             is_initial=is_initial,
             restart_increment=restart_increment,
             jobname=jobname,
-            target_triax=target_triax,
-            target_lode=target_lode,
             dot_eps_eq=dot_eps_eq,
-            target_delta_eps=target_delta_eps
+            target_delta_eps=target_delta_eps,
+            min_trial_increments=min_trial_increments,
+            max_trial_increments=max_trial_increments
         )
-        # print(f"LS trial {trial_counter[0]}: F_diag={F_diag}, residual={res}")
         return res
     # Lower bound is always [1e-6, 1e-6, 1e-6] to allow for compression
     lower = [1e-6, 1e-6, 1e-6]
@@ -132,8 +128,7 @@ if __name__ == '__main__':
     is_initial = True
     restart_increment = None
     jobname = "test_residual"
-    target_triax = jfnk_cfg.target_triax
-    target_lode = jfnk_cfg.target_lode
+    target_stresses = np.array([1.0, 1.0, 1.0])
     dot_eps_eq = 1.0  # Example value, adjust as needed
     target_delta_eps = 0.01  # Example value, adjust as needed
 
@@ -144,13 +139,37 @@ if __name__ == '__main__':
         F_diag=F_diag,
         F_prev=F_prev,
         damask_sim=sim,
-        jfnk_cfg=jfnk_cfg,
+        target_stresses=target_stresses,
         is_initial=is_initial,
         restart_increment=restart_increment,
         jobname=jobname,
-        target_triax=target_triax,
-        target_lode=target_lode,
         dot_eps_eq=dot_eps_eq,
         target_delta_eps=target_delta_eps
     )
     print(f"Residual: {res}")
+
+def target_principal_stresses(mean_stress, von_mises, lode_angle):
+    """
+    Compute target principal stresses from mean_stress, von_mises, and lode_angle (in radians).
+    Returns: principal_stresses (shape [3,], descending order)
+    """
+    J2 = (von_mises ** 2) / 1.5
+    sqrtJ2 = np.sqrt(J2)
+    s1 = mean_stress + (4 * sqrtJ2 / 3) * np.cos(lode_angle)
+    s2 = mean_stress + (4 * sqrtJ2 / 3) * np.cos(lode_angle - 2 * np.pi / 3)
+    s3 = mean_stress + (4 * sqrtJ2 / 3) * np.cos(lode_angle + 2 * np.pi / 3)
+    return np.sort([s1, s2, s3])[::-1]
+
+# New residual for JFNK/GMRES: compare homogenized principal stresses to target
+from damask_jfnk.postprocessing import compute_homogenized_principal_stresses
+
+def residual_principal(F_diag, F_prev, damask_sim, target_principal_stresses, *args, **kwargs):
+    """
+    Compute the residual as the difference between homogenized principal stresses and target principal stresses.
+    Additional args/kwargs can be passed to damask_sim.run_step as needed.
+    """
+    F_new = np.diag(F_diag)
+    # Run DAMASK, get result file
+    result_file = damask_sim.run_step(F=F_new, *args, **kwargs)
+    principal_stresses = compute_homogenized_principal_stresses(result_file)
+    return principal_stresses - target_principal_stresses
